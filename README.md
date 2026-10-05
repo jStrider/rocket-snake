@@ -54,13 +54,12 @@ userscript (your Rocket.Chat) --GM_xmlhttpRequest--> server.py (127.0.0.1:8787) 
   `↻` to regenerate, `ⓘ` for usage and versions, `Esc` to close. Typing hides them.
 - ✨ button (bottom right) or `Ctrl+Shift+Space` to ask on demand. Text already typed in the
   composer is treated as a draft to improve.
-- Auto mode (`AUTO` in the userscript): suggestions load when you open a room, after 1.5 s, only if
-  the last message is from someone else, less than 24 h old, and the composer is empty.
-  Results are cached per room until a new message arrives.
 - Prefetch (`PREFETCH`): every 15 s the userscript checks for new DMs and mentions and drafts
-  suggestions in the background (same guards). The button badge counts rooms with suggestions ready.
-- Onyx (`ONYX` in the userscript, `RS_ONYX=1` on the backend): a second call runs in parallel and adds
-  up to 2 replies labelled ONYX, with their sources, when the conversation needs internal knowledge.
+  suggestions in the background, only if the last message is from someone else and less than 24 h old.
+  The button badge counts rooms with suggestions ready; opening the room shows them from cache.
+  Opening any other room makes no call.
+- Onyx (`ONYX` in the userscript, `RS_ONYX=1` on the backend): never automatic. `ONYX ?` in the bar
+  asks Onyx for up to 2 replies grounded in internal docs, labelled ONYX, with their sources.
 - Script and server versions are shown under `ⓘ` (⚠️ and an orange `!` badge when they differ).
 
 ## Configuration

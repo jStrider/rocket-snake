@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         rocket-snake
 // @namespace    https://github.com/jStrider/rocket-snake
-// @version      0.7.1
+// @version      0.8.0
 // @description  Reply suggestions in Rocket.Chat (Claude + Onyx via local backend)
 // @match        https://chat.example.com/*
 // @grant        GM_xmlhttpRequest
@@ -15,9 +15,8 @@
   const SCRIPT_VERSION = GM_info.script.version;
   const HISTORY = 30;
   const COMPOSER = 'textarea[name="msg"]';
-  const AUTO = true;
-  const AUTO_DELAY_MS = 1500;
-  const AUTO_MAX_AGE_MS = 24 * 3600 * 1000;
+  const OPEN_DELAY_MS = 1500;
+  const REPLY_MAX_AGE_MS = 24 * 3600 * 1000;
   const PREFETCH = true;
   const PREFETCH_POLL_MS = 15000;
   const ONYX = true;
@@ -103,6 +102,7 @@
     .rs-x, .rs-icon { border: none; background: none; color: #9ea2a8; cursor: pointer; padding: 0 4px;
       font-size: 13px; line-height: 1; }
     .rs-x:hover, .rs-icon:hover { color: #e4e7ea; }
+    .rs-icon.rs-label { color: #1d74f5; font-size: 10px; }
     .rs-note { color: #9ea2a8; font-size: 11px; padding: 0 4px; }
   `;
   document.head.append(style);
@@ -195,7 +195,7 @@
   const ready = new Map();
   let me;
 
-  const needsReply = (last) => last && last.username !== me && Date.now() - Date.parse(last.ts) < AUTO_MAX_AGE_MS;
+  const needsReply = (last) => last && last.username !== me && Date.now() - Date.parse(last.ts) < REPLY_MAX_AGE_MS;
 
   function cached(key, fn, force) {
     if (force) cache.delete(key);
@@ -203,21 +203,21 @@
     return cache.get(key);
   }
 
-  async function start(target, { kind, draft = "", force = false }) {
+  async function prepare(target, draft = "") {
     me ??= (await api("me")).username;
     const ctx = await loadContext(target);
     const last = ctx.messages.at(-1);
-    if (kind !== "manual" && !needsReply(last)) return null;
-    const payload = { ...ctx, me, draft, kind };
-    const fast = () => callBackend("POST", "/suggest", payload);
-    const onyx = () =>
-      ONYX && usage?.onyx_enabled !== false
-        ? callBackend("POST", "/suggest", { ...payload, onyx: true })
-        : Promise.resolve(null);
-    if (draft) return { fast: fast(), onyx: onyx() };
-    const key = `${target.room._id}|${target.tmid || ""}|${last?.ts}`;
-    return { fast: cached(`${key}|fast`, fast, force), onyx: cached(`${key}|onyx`, onyx, force) };
+    const key = draft ? null : `${target.room._id}|${target.tmid || ""}|${last?.ts}`;
+    return { target, last, key, payload: { ...ctx, me, draft } };
   }
+
+  function request(prep, kind, onyx = false, force = false) {
+    const call = () => callBackend("POST", "/suggest", { ...prep.payload, kind, onyx });
+    return prep.key ? cached(`${prep.key}|${onyx ? "onyx" : "fast"}`, call, force) : call();
+  }
+
+  // What the bar currently shows: onyx is undefined (not asked), "pending", or the backend answer.
+  let view = null;
 
   function infoText() {
     const lines = [];
@@ -253,6 +253,13 @@
   }
 
   function controls() {
+    const nodes = [];
+    if (ONYX && usage?.onyx_enabled !== false && view?.fast && view.onyx === undefined) {
+      const ask = el("button", "rs-icon rs-label", "ONYX ?");
+      ask.title = "Chercher une réponse dans la doc interne (Onyx)";
+      ask.onclick = askOnyx;
+      nodes.push(ask);
+    }
     const regen = el("button", "rs-icon", "↻");
     regen.title = "Regénérer";
     regen.onclick = () => run("manual", { force: true });
@@ -260,39 +267,53 @@
     info.title = infoText();
     const close = el("button", "rs-icon", "✕");
     close.title = "Fermer (Esc)";
-    close.onclick = () => (bar.replaceChildren(), hideBar());
-    return [regen, info, close];
+    close.onclick = () => ((view = null), bar.replaceChildren(), hideBar());
+    return [...nodes, regen, info, close];
   }
 
-  function render(fast, onyx) {
-    const nodes = fast.suggestions.map((s) => chip(s));
-    if (onyx === undefined) nodes.push(el("span", "rs-note", "Onyx…"));
-    else if (onyx?.suggestions?.length) {
-      const sources = onyx.sources?.length ? `Sources : ${onyx.sources.join(", ")}` : "";
-      nodes.push(...onyx.suggestions.map((s) => chip(s, { label: "ONYX", title: sources })));
-    }
+  function render() {
+    const nodes = view.fast ? view.fast.suggestions.map((s) => chip(s)) : [el("span", "rs-note", "⏳ Génération…")];
+    if (view.onyx === "pending") nodes.push(el("span", "rs-note", "Onyx…"));
+    else if (view.onyx?.error) nodes.push(el("span", "rs-note", `Onyx : ❌ ${view.onyx.error}`));
+    else if (view.onyx?.suggestions?.length) {
+      const sources = view.onyx.sources?.length ? `Sources : ${view.onyx.sources.join(", ")}` : "";
+      nodes.push(...view.onyx.suggestions.map((s) => chip(s, { label: "ONYX", title: sources })));
+    } else if (view.onyx) nodes.push(el("span", "rs-note", "Onyx : rien de pertinent"));
     showBar([...nodes, ...controls()]);
   }
 
+  async function askOnyx() {
+    const v = view;
+    if (!v) return;
+    v.onyx = "pending";
+    render();
+    busy(true);
+    try {
+      v.onyx = await request(v.prep, "manual", true);
+    } catch (e) {
+      v.onyx = { error: e.message };
+    } finally {
+      busy(false);
+      updateBadge();
+    }
+    if (view === v && location.pathname === v.path) render();
+  }
+
+  // "manual" asks the backend; "open" only shows suggestions already prefetched for this room.
   async function run(kind, { force = false } = {}) {
     const path = location.pathname;
     const draft = composer()?.value || "";
-    if (kind === "auto" && draft) return;
-    if (kind === "manual") showBar([el("span", "rs-note", "⏳ Génération…"), ...controls()]);
+    if (kind === "open" && draft) return;
     busy(true);
     try {
-      const target = await currentTarget();
-      const job = await start(target, { kind, draft, force });
-      if (!job) return;
-      ready.delete(target.room._id);
-      updateBadge();
-      let fast;
-      let onyx;
-      job.onyx
-        .then((r) => (onyx = r), () => (onyx = null))
-        .then(() => fast && location.pathname === path && bar.style.display !== "none" && render(fast, onyx));
-      fast = await job.fast;
-      if (location.pathname === path) render(fast, onyx);
+      const prep = await prepare(await currentTarget(), draft);
+      const hit = prep.key && cache.get(`${prep.key}|fast`);
+      if (kind === "open" && !hit) return;
+      const v = (view = { path, prep, fast: null, onyx: undefined });
+      if (kind === "manual") render();
+      v.fast = kind === "open" ? await hit : await request(prep, "manual", false, force);
+      ready.delete(prep.target.room._id);
+      if (view === v && location.pathname === path) render();
     } catch (e) {
       if (kind === "manual") showBar([el("span", "rs-note", `❌ ${e.message}`), ...controls()]);
     } finally {
@@ -314,11 +335,12 @@
 
   let lastPath = location.pathname;
   setInterval(() => {
-    if (!AUTO || location.pathname === lastPath) return;
+    if (location.pathname === lastPath) return;
     lastPath = location.pathname;
+    view = null;
     bar.replaceChildren();
     hideBar();
-    setTimeout(() => location.pathname === lastPath && run("auto"), AUTO_DELAY_MS);
+    setTimeout(() => location.pathname === lastPath && run("open"), OPEN_DELAY_MS);
   }, 500);
 
   // Warm the cache when someone DMs or mentions me, so opening the room is instant.
@@ -333,9 +355,9 @@
         if (!wanted || !s.alert || !HISTORY_ENDPOINT[s.t]) continue;
         busy(true);
         try {
-          const job = await start({ room: { _id: s.rid, t: s.t, name: s.name, fname: s.fname } }, { kind: "prefetch" });
-          if (job) {
-            await job.fast;
+          const prep = await prepare({ room: { _id: s.rid, t: s.t, name: s.name, fname: s.fname } });
+          if (needsReply(prep.last)) {
+            await request(prep, "prefetch");
             ready.set(s.rid, s.fname || s.name);
           }
         } catch {
@@ -358,6 +380,6 @@
       e.preventDefault();
       run("manual");
     }
-    if (e.key === "Escape") (bar.replaceChildren(), hideBar());
+    if (e.key === "Escape") ((view = null), bar.replaceChildren(), hideBar());
   });
 })();

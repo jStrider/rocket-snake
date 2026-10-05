@@ -12,7 +12,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.7.1"
+VERSION = "0.8.0"
 
 ENV_FILE = Path(os.environ.get("RS_ENV_FILE", "~/.config/rocket-snake/env")).expanduser()
 if ENV_FILE.exists():
