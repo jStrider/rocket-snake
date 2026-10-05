@@ -12,7 +12,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 
 ENV_FILE = Path(os.environ.get("RS_ENV_FILE", "~/.config/rocket-snake/env")).expanduser()
 if ENV_FILE.exists():
@@ -32,6 +32,8 @@ PERSONA = os.environ.get("RS_PERSONA", "a software engineer")
 ORG = os.environ.get("RS_ORG", "the company")
 ONYX_URL = os.environ.get("RS_ONYX_URL", "")
 ONYX_KEY_CMD = os.environ.get("RS_ONYX_KEY_CMD", "")
+ROCKET_URL = os.environ.get("RS_ROCKET_URL", "").rstrip("/")
+USERSCRIPT = Path(__file__).with_name("rocket-snake.user.js")
 
 BASE = """You draft chat replies for {me}, {persona} at {org}, in Rocket.Chat.
 Write in the language of the conversation (usually French), in {me}'s voice: direct, concise, no fluff,
@@ -55,8 +57,9 @@ Output ONLY a JSON object, no prose, no code fence:
 
 def onyx_mcp_config():
     if not ONYX_URL or not ONYX_KEY_CMD:
-        raise SystemExit("RS_ONYX=1 requires RS_ONYX_URL and RS_ONYX_KEY_CMD")
-    key = subprocess.run(ONYX_KEY_CMD, shell=True, capture_output=True, text=True, check=True).stdout.strip()
+        raise RuntimeError("RS_ONYX=1 requires RS_ONYX_URL and RS_ONYX_KEY_CMD")
+    key = subprocess.run(ONYX_KEY_CMD, shell=True, capture_output=True, text=True, check=True,
+                         timeout=120).stdout.strip()
     fd, path = tempfile.mkstemp(prefix="rocket-snake-mcp-", suffix=".json")
     with os.fdopen(fd, "w") as f:
         json.dump({"mcpServers": {"onyxkb": {
@@ -67,7 +70,17 @@ def onyx_mcp_config():
     return path
 
 
-MCP_CONFIG = onyx_mcp_config() if USE_ONYX else None
+MCP_CONFIG = None
+MCP_LOCK = threading.Lock()
+
+
+def mcp_config():
+    global MCP_CONFIG
+    with MCP_LOCK:
+        if MCP_CONFIG is None:
+            MCP_CONFIG = onyx_mcp_config()
+        return MCP_CONFIG
+
 LOG_LOCK = threading.Lock()
 
 
@@ -93,7 +106,7 @@ def usage_stats():
         p["cost_usd"] = round(p["cost_usd"], 3)
     stats["daily_budget_usd"] = DAILY_BUDGET_USD
     stats["server_version"] = VERSION
-    stats["onyx_enabled"] = bool(MCP_CONFIG)
+    stats["onyx_enabled"] = USE_ONYX
     return stats
 
 
@@ -128,7 +141,7 @@ def suggest(req):
         "--system-prompt", (ONYX if onyx else FAST).format(me=req.get("me", "me"), persona=PERSONA, org=ORG),
     ]
     if onyx:
-        cmd += ["--mcp-config", MCP_CONFIG, "--allowedTools", "mcp__onyxkb__search_indexed_documents"]
+        cmd += ["--mcp-config", mcp_config(), "--allowedTools", "mcp__onyxkb__search_indexed_documents"]
     out = subprocess.run(cmd, input=build_prompt(req), capture_output=True, text=True,
                          timeout=ONYX_TIMEOUT if onyx else TIMEOUT)
     res = json.loads(out.stdout)
@@ -164,7 +177,22 @@ class Handler(BaseHTTPRequestHandler):
         # Custom header forces a CORS preflight we never answer: only the userscript can call us.
         return self.headers.get("X-Rocket-Snake") == "1"
 
+    def _send_userscript(self):
+        url = f"http://{HOST}:{PORT}/rocket-snake.user.js"
+        header = f"// @updateURL    {url}\n// @downloadURL  {url}\n// ==/UserScript=="
+        script = USERSCRIPT.read_text().replace("// ==/UserScript==", header, 1)
+        if ROCKET_URL:
+            script = script.replace("https://chat.example.com/*", f"{ROCKET_URL}/*")
+        payload = script.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self):
+        if self.path == "/rocket-snake.user.js":
+            return self._send_userscript()
         if self.path != "/stats" or not self._allowed():
             return self._send(404, {"error": "not found"})
         self._send(200, usage_stats())
@@ -175,7 +203,7 @@ class Handler(BaseHTTPRequestHandler):
         t0 = time.time()
         try:
             req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-            if req.get("onyx") and not MCP_CONFIG:
+            if req.get("onyx") and not USE_ONYX:
                 return self._send(200, {"suggestions": [], "disabled": True})
             stats = usage_stats()
             if req.get("kind", "manual") != "manual" and stats["today"]["cost_usd"] >= DAILY_BUDGET_USD:
@@ -190,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, lambda *_: exit(0))
-    print(f"rocket-snake v{VERSION} on http://{HOST}:{PORT} (model={MODEL}, onyx={'on' if MCP_CONFIG else 'off'}, "
+    print(f"rocket-snake v{VERSION} on http://{HOST}:{PORT} (model={MODEL}, onyx={'on' if USE_ONYX else 'off'}, "
           f"budget=${DAILY_BUDGET_USD}/day, log={USAGE_LOG})", flush=True)
     try:
         ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

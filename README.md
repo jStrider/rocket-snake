@@ -21,25 +21,31 @@ userscript (your Rocket.Chat) --GM_xmlhttpRequest--> server.py (127.0.0.1:8787) 
 
 ## Setup
 
-1. Add `rocket-snake.user.js` to Violentmonkey, then in the script settings add your Rocket.Chat URL
-   as a custom `@match` (e.g. `https://chat.mycompany.com/*`). The shipped `@match` is a placeholder.
-2. Optional config in `~/.config/rocket-snake/env` (`KEY=VALUE` lines, read at startup;
+1. Optional config in `~/.config/rocket-snake/env` (`KEY=VALUE` lines, read at startup;
    environment variables take precedence):
 
    ```sh
+   RS_ROCKET_URL=https://chat.mycompany.com
    CLAUDE_CONFIG_DIR=/Users/me/.claude
    RS_PERSONA=an SRE / Cloud Engineer
    RS_ORG=MyCompany
+   RS_ONYX=1
    RS_ONYX_URL=https://onyx-mcp.mycompany.com/
    RS_ONYX_KEY_CMD=pass show onyx/mcp_api_key
    ```
 
-3. Start the backend:
+2. Run the backend, either in a terminal (`python3 server.py`) or as a macOS LaunchAgent that starts
+   at login and restarts on crash:
 
    ```sh
-   python3 server.py                # without Onyx
-   RS_ONYX=1 python3 server.py      # with Onyx
+   ./install-launchagent.sh                                            # install / reinstall
+   launchctl kickstart -k gui/$(id -u)/com.github.jstrider.rocket-snake  # restart after an update
+   tail -f ~/Library/Logs/rocket-snake.log
    ```
+
+3. Open <http://127.0.0.1:8787/rocket-snake.user.js> and install it in Violentmonkey. The backend serves
+   the script with your `RS_ROCKET_URL` as `@match` and itself as `@updateURL`, so Violentmonkey picks up
+   new versions automatically.
 
 ## Usage
 
@@ -62,6 +68,7 @@ userscript (your Rocket.Chat) --GM_xmlhttpRequest--> server.py (127.0.0.1:8787) 
 |---|---|---|
 | `RS_PORT` | `8787` | Backend port (127.0.0.1 only) |
 | `RS_MODEL` | `sonnet` | Model passed to `claude -p` |
+| `RS_ROCKET_URL` | | Rocket.Chat URL injected as `@match` in the served userscript |
 | `RS_PERSONA` | `a software engineer` | Who the replies are written for |
 | `RS_ORG` | `the company` | Organisation name used in the prompts |
 | `RS_ONYX` | `0` | `1` enables Onyx-grounded suggestions |

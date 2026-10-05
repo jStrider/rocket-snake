@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         rocket-snake
 // @namespace    https://github.com/jStrider/rocket-snake
-// @version      0.7.0
+// @version      0.7.1
 // @description  Reply suggestions in Rocket.Chat (Claude + Onyx via local backend)
 // @match        https://chat.example.com/*
 // @grant        GM_xmlhttpRequest
