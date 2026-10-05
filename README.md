@@ -35,12 +35,13 @@ userscript (your Rocket.Chat) --GM_xmlhttpRequest--> server.py (127.0.0.1:8787) 
    ```
 
 2. Run the backend, either in a terminal (`python3 server.py`) or as a macOS LaunchAgent that starts
-   at login and restarts on crash:
+   at login and restarts on crash, managed with `rsctl`:
 
    ```sh
-   ./install-launchagent.sh                                            # install / reinstall
-   launchctl kickstart -k gui/$(id -u)/com.github.jstrider.rocket-snake  # restart after an update
-   tail -f ~/Library/Logs/rocket-snake.log
+   ./rsctl install              # write the LaunchAgent and start it (re-run after moving the repo)
+   ./rsctl start | stop | restart | status | logs
+   ./rsctl menubar              # optional: SwiftBar menu bar icon (start/stop, usage, logs)
+   ./rsctl uninstall [--purge]  # remove the LaunchAgent and menu bar plugin (--purge: config, usage, logs)
    ```
 
 3. Open <http://127.0.0.1:8787/rocket-snake.user.js> and install it in Violentmonkey. The backend serves

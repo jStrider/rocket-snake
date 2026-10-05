@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Control the rocket-snake backend (macOS LaunchAgent) and its SwiftBar menu bar plugin.
+set -euo pipefail
+
+LABEL="com.github.jstrider.rocket-snake"
+DOMAIN="gui/$(id -u)"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOG="$HOME/Library/Logs/rocket-snake.log"
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+PORT="${RS_PORT:-8787}"
+PLUGIN_NAME="rocket-snake.10s.sh"
+
+loaded() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
+
+swiftbar_dir() { defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || true; }
+
+write_plist() {
+  local python tools_path
+  python="$(command -v python3)"
+  tools_path="$(dirname "$(command -v claude)"):$(dirname "$(command -v pass 2>/dev/null || echo /usr/bin/true)"):/usr/local/bin:/usr/bin:/bin"
+  mkdir -p "$(dirname "$PLIST")" "$(dirname "$LOG")"
+  cat > "$PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$python</string>
+    <string>$DIR/server.py</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$tools_path</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>$LOG</string>
+  <key>StandardErrorPath</key><string>$LOG</string>
+</dict>
+</plist>
+PLIST
+}
+
+start() {
+  [[ -f "$PLIST" ]] || { echo "Not installed: run '$0 install'" >&2; exit 1; }
+  loaded || launchctl bootstrap "$DOMAIN" "$PLIST"
+}
+
+stop() {
+  loaded || return 0
+  launchctl bootout "$DOMAIN/$LABEL" || true
+  for _ in $(seq 1 20); do loaded || return 0; sleep 0.25; done
+  echo "Service still loaded after bootout" >&2
+  return 1
+}
+
+case "${1:-status}" in
+  install)
+    write_plist
+    stop
+    start
+    echo "Installed $LABEL (starts at login) — logs: $LOG"
+    ;;
+  start) start ;;
+  stop) stop ;;
+  restart) if loaded; then launchctl kickstart -k "$DOMAIN/$LABEL"; else start; fi ;;
+  status)
+    if loaded; then
+      echo "running: $(launchctl print "$DOMAIN/$LABEL" | awk '/^\tpid =/{print "pid " $3}')"
+      curl -s -m 2 -H "X-Rocket-Snake: 1" "http://127.0.0.1:$PORT/stats" || echo "(not answering yet)"
+      echo
+    else
+      echo "stopped"
+    fi
+    ;;
+  logs) tail -f "$LOG" ;;
+  menubar)
+    plugins="$(swiftbar_dir)"
+    [[ -n "$plugins" ]] || { echo "SwiftBar not configured: brew install --cask swiftbar, then pick a plugin folder" >&2; exit 1; }
+    mkdir -p "$plugins"
+    ln -sf "$DIR/swiftbar/$PLUGIN_NAME" "$plugins/$PLUGIN_NAME"
+    open -g "swiftbar://refreshallplugins" 2>/dev/null || open -a SwiftBar
+    echo "Menu bar plugin linked in $plugins"
+    ;;
+  uninstall)
+    stop
+    rm -f "$PLIST"
+    plugins="$(swiftbar_dir)"
+    [[ -z "$plugins" ]] || rm -f "$plugins/$PLUGIN_NAME"
+    if [[ "${2:-}" == "--purge" ]]; then
+      rm -rf "$HOME/.config/rocket-snake" "$HOME/.local/state/rocket-snake" "$LOG"
+      echo "Uninstalled and purged config, usage log and logs."
+    else
+      echo "Uninstalled. Kept: ~/.config/rocket-snake (config), ~/.local/state/rocket-snake (usage), $LOG"
+      echo "Remove them with '$0 uninstall --purge'. Remove the userscript from Violentmonkey by hand."
+    fi
+    ;;
+  *) echo "usage: $0 {install|start|stop|restart|status|logs|menubar|uninstall [--purge]}" >&2; exit 2 ;;
+esac
